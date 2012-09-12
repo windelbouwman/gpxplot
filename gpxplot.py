@@ -33,26 +33,38 @@ def getTime(pts):
 @axisOption('speed')
 def getSpeed(pts):
     # in km/h
-    # TODO, for now assume 15 km/h
     v = [p1.speed(p2) for p1, p2 in zip(pts[:-1], pts[1:])]
     v.append(0.0) # fixup length for plot
-    return numpy.array(v) * (3600.0 / 1000.0)
+    v = numpy.array(v) * (3600.0 / 1000.0)
+    # zero v > 30 km/h
+    highs = v > 30.0
+    v[highs] = 0
+    return v
+
+@axisOption('filtered speed')
+def getFilteredSpeed(pts):
+    v = getSpeed(pts)
+    # smooth with hanning filter:
+    N = 10
+    w = numpy.hanning(N*2+1) # generate window with odd number of points
+    v = numpy.convolve(w/w.sum(), v)[N:-N]
+    return v
 
 @axisOption('beats per minute')
 def getBeatsPerMinute(pts):
-    # TODO, for now assume 75 bpm
-    bpm = [75.0 for pt in pts]
-    return numpy.array(bpm)
+    bpm = [pt.hr for pt in pts]
+    bpm = numpy.array(bpm)
+    return bpm
 
 @axisOption('beats per kilometer')
 def getBeatsPerKilometer(pts):
     # beats / km
-    return (getBeatsPerMinute(pts) * 60) / getSpeed(pts)
+    return (getBeatsPerMinute(pts) * 60) / getFilteredSpeed(pts)
 
 class TrackModel(QAbstractListModel):
     def __init__(self):
         QAbstractListModel.__init__(self)
-        self.tracks = []
+        self.segments = []
         self.doFillModel()
     def doFillModel(self):
         """ Loads all gpx files in the current directory. """
@@ -61,22 +73,26 @@ class TrackModel(QAbstractListModel):
             fn = str(fn)
             with open(fn, 'r') as f:
                 gpx = gpxpy.parse(f)
-            gpx.filename = fn
-            gpx.plot = False
-            self.tracks.append(gpx)
+            for track in gpx.tracks:
+                for segment in track.segments:
+                    if segment.length_3d() > 500.0:
+                        # Only segments longer then 500.0 meters
+                        segment.filename = fn
+                        segment.plot = False
+                        self.segments.append(segment)
     def rowCount(self, parent=None):
-        return len(self.tracks)
+        return len(self.segments)
     def data(self, idx, role):
-        track = self.tracks[idx.row()]
+        segment = self.segments[idx.row()]
         if role == Qt.DisplayRole:
-            return track.filename
+            return segment.filename
         elif role == Qt.CheckStateRole:
-            return Qt.Checked if track.plot else Qt.Unchecked
+            return Qt.Checked if segment.plot else Qt.Unchecked
         return QVariant()
     def setData(self, idx, value, role):
         if role == Qt.CheckStateRole:
-            track = self.tracks[idx.row()]
-            track.plot = value.toBool()
+            segment = self.segments[idx.row()]
+            segment.plot = value.toBool()
             self.dataChanged.emit(idx, idx)
             return True
         return QAbstractListModel.setData(self, idx, value, role)
@@ -117,9 +133,8 @@ class GpxPlot(QWidget):
         pen = pyqtgraph.mkPen({'color': "r", 'width': 2})
 
         # Select the tracks to plot:
-        for gpx in [g for g in self.trackModel.tracks if g.plot]:
-            tracks = [track for track in gpx.tracks if track.length_2d() > 0]
-            pts = tracks[0].segments[0].points
+        for segment in [g for g in self.trackModel.segments if g.plot]:
+            pts = segment.points
             x = axis_options[xtype](pts)
             y = axis_options[ytype](pts)
             pi.plot(x, y, pen=pen)
